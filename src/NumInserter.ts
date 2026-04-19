@@ -76,7 +76,7 @@ export class NumInserter {
         this._settings = settings;
     }
 
-    private insertNumbers(settings: IInsertSettngs) {
+    private insertNumbers(settings: IInsertSettngs): Thenable<boolean> {
         let textEditor = vscode.window.activeTextEditor;
 
         const selections: vscode.Selection[] = textEditor.selections;
@@ -86,8 +86,9 @@ export class NumInserter {
         const step = settings.step;
 
         let cur = start;
+        const insertedStrs: string[] = [];
 
-        textEditor.edit(function (builder) {
+        return textEditor.edit(function (builder) {
             let str: string, i: number
             let getStr: (formatStr: string, cur: number) => string
             if (/wk/i.test(formatStr)) {
@@ -122,10 +123,26 @@ export class NumInserter {
             for (i = 0; i < selections.length; i++) {
                 str = getStr(formatStr, cur)
                 cur += step
+                insertedStrs.push(str)
                 builder.replace(selections[i], str)
             }
-        }
-        )
+        }).then((ok) => {
+            // 编辑完成后,VSCode 把每个光标定位在插入文本末尾。
+            // 把选区扩展为覆盖刚插入的文本,这样下一次 replace 才能真正替换掉旧值。
+            const updated = textEditor.selections;
+            const spanned: vscode.Selection[] = [];
+            for (let i = 0; i < updated.length && i < insertedStrs.length; i++) {
+                const endPos = updated[i].active;
+                const str = insertedStrs[i];
+                const startChar = Math.max(0, endPos.character - str.length);
+                const startPos = new vscode.Position(endPos.line, startChar);
+                spanned.push(new vscode.Selection(startPos, endPos));
+            }
+            if (spanned.length > 0) {
+                textEditor.selections = spanned;
+            }
+            return ok;
+        });
     }
 
     private parseUserInput(input: string): IInsertSettngs {
@@ -177,35 +194,22 @@ export class NumInserter {
     }
 
     public processInsert() {
-        //Input default numbers first.
-        this.insertNumbers(this._settings);
-
-
         const opt: vscode.InputBoxOptions = {
             placeHolder: "(default) :d:0:1",
             prompt: "Input :format or :format:start:step"
         }
-        const input = vscode.window.showInputBox(opt);
 
-        if (!input) {
-            return;
-        }
-
-        let parseUserInput = this.parseUserInput;
-        let insertNumbers = this.insertNumbers;
-
-        let newSettings = null;
-
-        input.then(function (val: string) {
-
-            newSettings = parseUserInput(val);
-
+        // 先插入默认数列,等 edit 完成并把选区扩展为覆盖默认数列后,再弹出输入框。
+        // 这样用户输入新格式时,insertNumbers 才能真正替换掉默认数列,而不是追加在它后面。
+        this.insertNumbers(this._settings).then(() => {
+            return vscode.window.showInputBox(opt);
+        }).then((val: string) => {
+            const newSettings = this.parseUserInput(val);
             if (!newSettings) {
                 return;
             }
-            insertNumbers(newSettings);
-        })
-
+            this.insertNumbers(newSettings);
+        });
     }
 
 
